@@ -1,0 +1,259 @@
+require 'yaml'
+
+fastlane_version "1.105.0"
+
+default_platform :ios
+
+platform :ios do
+
+  ######################### RELEASE UTILITIES ##########################
+
+  desc "* Setups upcoming release"
+  desc "* Asks for next upcoming semantic version: path, minor, major"
+  desc "* Based on the input updates the project version in project plists"
+  desc "* Updates the changelog upcoming version"
+  desc "* Pushes the changes into the given develop branch"
+  desc "####Options"
+  desc "* **`develop_branch`** - develop branch name"
+  desc "* **`xcodeproject`** - xcodeproject name"
+  desc "* **`github_remote`** - the remote on the github in format 'conichiGMBH'"
+  desc ""
+  lane :setup_new_release do |options|
+    develop_branch = options[:develop_branch]
+    xcodeproject = options[:xcodeproject]
+    github_remote = options[:github_remote]
+
+    possible_upcoming_versions = ["patch", "minor", "major"]
+    possible_versions_indexes = ["1", "2", "3"]
+    upcoming_version = prompt(text: "You must provide a new version to set. Available:
+    1) #{possible_upcoming_versions[0]}
+    2) #{possible_upcoming_versions[1]}
+    3) #{possible_upcoming_versions[2]}")
+
+    if possible_versions_indexes.include? upcoming_version
+      increment_version_number(
+        bump_type: possible_upcoming_versions[upcoming_version.to_i - 1]
+      )
+    elsif possible_upcoming_versions.include? upcoming_version
+      increment_version_number(
+        bump_type: upcoming_version
+      )
+    else
+      possible_inputs = ["1", "2", "3", possible_upcoming_versions[0], possible_upcoming_versions[1], possible_upcoming_versions[2]]
+      puts "Incorrect new upcoming version. Possible inputs: #{possible_inputs.to_s}"
+    end
+
+    new_upcoming_version = get_version_number(
+      xcodeproj: xcodeproject
+    )
+
+    commit_version_bump(message: "Bump version to #{new_upcoming_version}.")
+
+    remote = github_remote
+    push_to_git_remote(
+      remote: remote,
+      local_branch: develop_branch,
+      remote_branch: develop_branch
+    )
+
+    changelog_data = get_changelog_data
+    changelog_data["upcoming"]["version"] = new_upcoming_version
+    save_changelog_data(
+      changelog_data: changelog_data
+    )
+  end
+
+  ######################### CHANGELOG UTILITIES ##########################
+
+  desc "Moves upcoming version from Changelog to releases"
+  desc ""
+  lane :put_upcoming_to_releases do
+    changelog_data = get_changelog_data
+    upcoming = changelog_data["upcoming"].clone
+    changelog_data["upcoming"]["version"] = nil
+    changelog_data["upcoming"]["notes"] = nil
+    if changelog_data["releases"].count > 0
+      changelog_data["releases"].unshift(upcoming)
+    else
+      changelog_data["releases"].push(upcoming)
+    end
+    save_changelog_data(
+      changelog_data: changelog_data
+    )
+    git_commit_shell(
+      message: "Move upcoming version to releases in CHANGELOG"
+    )
+  end
+
+  desc "Loads the HASH representation from the given YAML file."
+  desc "If the file path is not given the '../CHANGELOG.yml' will be used."
+  desc "####Options"
+  desc "* **`changelog_yaml_path`** - the relative path to the CHANGELOG.yml"
+  desc ""
+  lane :get_changelog_data do |options|
+    changelog_yaml_path = options[:changelog_yaml_path] ? options[:changelog_yaml_path] : "../CHANGELOG.yml"
+    changelog_data = YAML.load(File.open(changelog_yaml_path))
+    changelog_data
+  end
+
+  desc "Saves the given changelog HASH into the CHANGELOG file at the given path."
+  desc "If the file path is not given the '../CHANGELOG.yml' will be used."
+  desc "####Options"
+  desc "* **`changelog_yaml_path`** - the relative path to the CHANGELOG.yml"
+  desc ""
+  lane :save_changelog_data do |options|
+    changelog_yaml_path = options[:changelog_yaml_path] ? options[:changelog_yaml_path] : "../CHANGELOG.yml"
+    changelog_data = options[:changelog_data]
+    File.open(changelog_yaml_path, 'w') { |f| YAML.dump(changelog_data, f) }
+  end
+
+  desc "Gets the array of releases from the CHANGELOG file."
+  desc ""
+  lane :get_releases do
+    changelog_data = get_changelog_data
+    releases = changelog_data["releases"]
+    releases
+  end
+
+  desc "Gets the upcoming release from the CHANGELOG file."
+  desc ""
+  lane :get_upcoming do
+    changelog_data = get_changelog_data
+    upcoming = changelog_data["upcoming"]
+    upcoming
+  end
+
+  desc "Gets the upcoming version from the CHANGELOG file."
+  desc ""
+  lane :get_upcoming_version do
+    upcoming = get_upcoming
+    upcoming_version = upcoming["version"]
+    upcoming_version
+  end
+
+  desc "Gets the upcoming notes from the CHANGELOG file."
+  desc ""
+  lane :get_upcoming_notes do
+    upcoming = get_upcoming
+    upcoming_notes =  "* #{upcoming["notes"].join "\n* "} \n\n"
+    upcoming_notes
+  end
+
+  ######################### GIT UTILITIES ##########################
+
+  desc "git commit -am 'message' where the 'message' is a required parameter"
+  desc "**`message`** - commit message"
+  desc ""
+  lane :git_commit_shell do |options|
+    message = options[:message]
+    sh("git commit -am '#{message}'")
+  end
+
+  desc "git merge 'source_branch' where the 'source_branch' is a required parameter."
+  desc "####Options"
+  desc "* **`source_branch`** - source branch to be merged into current name"
+  desc ""
+  lane :git_merge_branch do |options|
+    source_branch = options[:source_branch]
+    sh("git merge #{source_branch}")
+  end
+
+  desc "git checkout 'destination_branch' where the 'destination_branch' is a required parameter."
+  desc "####Options"
+  desc "* **`destination_branch`** - destination branch to be checked out"
+  desc ""
+  lane :git_checkout_branch do |options|
+    destination_branch = options[:destination_branch]
+    sh("git checkout #{destination_branch}")
+  end
+
+  desc "Checks if the given 'branch' exists on the 'remote'."
+  desc "####Options"
+  desc "* **`remote`** - git remote in format git@github.com:conichiGMBH/ios-fastlane.git"
+  desc "* **`branch`** - branch name"
+  desc ""
+  lane :git_branch_exists_on_remote do |options|
+    remote = options[:remote]
+    branch = options[:branch]
+    sh("git ls-remote --heads #{remote} #{branch} | wc -l")
+  end
+
+  desc "Checks if current git status is clean."
+  desc ""
+  lane :git_status_clean? do |options|
+    sh("git status --porcelain").empty?
+  end
+
+  desc "Creates or updates tag with the given name."
+  desc "####Options"
+  desc "* **`branch`** - branch name with the future tag"
+  desc "* **`tag_name`** - tag name to be used"
+  desc "* **`remote`** - git remote in format git@github.com:conichiGMBH/ios-fastlane.git"
+  desc ""
+  lane :git_add_or_update_tag do |options|
+    remote = options[:remote]
+    branch = options[:branch]
+
+    branch_exist = git_branch_exists_on_remote(
+      remote: remote,
+      branch: branch
+    )
+
+    sh("git pull #{remote} #{branch} --tags") if branch_exist.to_i
+
+    tag_name = options[:tag_name]
+    if git_tag_exists(tag: tag_name)
+      sh("git tag #{tag_name} -d")
+      sh("git push #{remote} :refs/tags/#{tag_name}")
+    end
+
+    sh("git tag #{tag_name}")
+    sh("git push #{remote} --tags")
+  end
+
+  ######################### GITHUB UTILITIES ##########################
+
+  desc "Creates or updates github release."
+  desc "####Options"
+  desc "* **`release_name`** - release name"
+  desc "* **`description`** - release description"
+  desc "* **`repository_name`** - repositiry name in format 'conichiGMBH/ios-sdk'"
+  desc "* **`tag_name`** - tag name"
+  desc "* **`api_token`** - github api token"
+  desc "* **`upload_assets`** - array of paths to files to be uploaded and attached to the release"
+  lane :set_or_update_github_release do |options|
+    release_name = options[:release_name]
+    description = options[:description]
+    repository_name = options[:repository_name]
+    tag_name = options[:tag_name]
+    api_token = options[:api_token]
+    upload_assets = options[:upload_assets]
+
+    release = get_github_release(
+      url: repository_name,
+      version: release_name,
+      api_token: api_token
+    )
+
+    if release != nil
+      cni_edit_github_release(
+        repository_name: repository_name,
+        id: release['id'].to_s,
+        description: description,
+        tag_name: tag_name,
+        name: release_name,
+        api_token: api_token,
+        upload_assets: upload_assets
+      )
+    else
+      set_github_release(
+        repository_name: repository_name,
+        api_token: api_token,
+        name: release_name,
+        tag_name: tag_name,
+        description: description,
+        upload_assets: upload_assets
+      )
+    end
+  end
+end
