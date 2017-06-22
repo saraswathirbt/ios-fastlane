@@ -148,6 +148,12 @@ platform :ios do
     message = options[:message]
     sh("git commit -am '#{message}'")
   end
+  
+  desc "git add ."
+  desc ""
+  lane :git_add_all_shell do |options|
+    sh("git add .")
+  end
 
   desc "git merge 'source_branch' where the 'source_branch' is a required parameter."
   desc "####Options"
